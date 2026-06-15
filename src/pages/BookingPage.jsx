@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { bookingsAPI } from '../services/api';
+import { bookingsAPI, addressesAPI } from '../services/api';
 import liff from '@line/liff';
 import { PROVINCES, getDistricts, getSubdistricts, haversineKm } from '../data/thaiLocations';
 import { getHospitals } from '../data/hospitals';
@@ -13,6 +13,8 @@ const CAR_TYPES = [
 ];
 
 const DEST_TYPE = { HOSPITAL: 'hospital', OTHER: 'other' };
+
+const ADDR_LABEL_EMOJI = { 'บ้าน': '🏠', 'โรงพยาบาล': '🏥', 'ที่ทำงาน': '💼', 'แม่': '👩', 'พ่อ': '👴', 'ปู่': '👴', 'ย่า': '👵', 'ตา': '👴', 'ยาย': '👵' };
 
 function initPickup() {
   return { houseNo: '', moo: '', soi: '', road: '', detail: '', province: '', district: '', subdistrict: '', lat: null, lng: null };
@@ -35,6 +37,12 @@ export default function BookingPage({ user }) {
   const [success, setSuccess] = useState(null);
   // MapPicker state
   const [mapTarget, setMapTarget] = useState(null); // 'pickup' | 'dest'
+  // Saved addresses
+  const [savedAddrs, setSavedAddrs]   = useState([]);
+  const [saveDialog, setSaveDialog]   = useState(false);  // แสดง dialog บันทึก
+  const [saveLabel,  setSaveLabel]    = useState('บ้าน');
+  const [editAddr,   setEditAddr]     = useState(null);   // address ที่กำลัง edit
+  const [addrLoaded, setAddrLoaded]   = useState(false);
 
   const setP = (k, v) => setPass(p => ({ ...p, [k]: v }));
   const setPick = (k, v) => setPickup(p => ({ ...p, [k]: v }));
@@ -85,6 +93,78 @@ export default function BookingPage({ user }) {
     }, 400);
     return () => clearTimeout(t);
   }, [carType, effectiveDistance]);
+
+  // ── โหลด + auto-fill ที่อยู่ที่บันทึก ──────────────────────────
+  useEffect(() => {
+    addressesAPI.getAll().then(({ data }) => {
+      setSavedAddrs(data);
+      setAddrLoaded(true);
+      // Auto-fill ที่อยู่ default ถ้ายังไม่ได้กรอก
+      const def = data.find(a => a.is_default) || data[0];
+      if (def && !pickup.houseNo && !pickup.province) {
+        applyAddress(def);
+      }
+    }).catch(() => setAddrLoaded(true));
+  }, []); // eslint-disable-line
+
+  // apply ที่อยู่ที่เลือก → กรอกช่องทั้งหมด
+  const applyAddress = (addr) => {
+    setPickup(p => ({
+      ...p,
+      houseNo:    addr.house_no    || '',
+      moo:        addr.moo         || '',
+      soi:        addr.soi         || '',
+      road:       addr.road        || '',
+      detail:     addr.detail      || '',
+      province:   addr.province    || '',
+      district:   addr.district    || '',
+      subdistrict: addr.subdistrict || '',
+      lat:        addr.lat || null,
+      lng:        addr.lng || null,
+    }));
+    if (addr.id) addressesAPI.recordUse(addr.id).catch(() => {});
+  };
+
+  // บันทึกที่อยู่ปัจจุบัน
+  const handleSaveAddress = async () => {
+    if (savedAddrs.length >= 3 && !editAddr) {
+      alert('บันทึกได้สูงสุด 3 ที่อยู่ กรุณาลบที่อยู่เดิมก่อน');
+      return;
+    }
+    const payload = {
+      label:       saveLabel,
+      house_no:    pickup.houseNo,
+      moo:         pickup.moo,
+      soi:         pickup.soi,
+      road:        pickup.road,
+      detail:      pickup.detail,
+      province:    pickup.province,
+      district:    pickup.district,
+      subdistrict: pickup.subdistrict,
+      lat:         pickup.lat,
+      lng:         pickup.lng,
+    };
+    try {
+      if (editAddr) {
+        const { data } = await addressesAPI.update(editAddr.id, payload);
+        setSavedAddrs(prev => prev.map(a => a.id === editAddr.id ? data : a));
+      } else {
+        const { data } = await addressesAPI.save(payload);
+        setSavedAddrs(prev => [...prev, data]);
+      }
+      setSaveDialog(false);
+      setEditAddr(null);
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    }
+  };
+
+  // ลบที่อยู่
+  const handleDeleteAddress = async (addr) => {
+    if (!confirm(`ลบ "${addr.label}" ?`)) return;
+    await addressesAPI.remove(addr.id).catch(() => {});
+    setSavedAddrs(prev => prev.filter(a => a.id !== addr.id));
+  };
 
   // ── เปิด MapPicker ─────────────────────────────────────────────
   const openMap = (target) => setMapTarget(target);
@@ -186,6 +266,44 @@ export default function BookingPage({ user }) {
             </Field>
           </Card>
 
+          {/* ══ ที่อยู่ที่บันทึก (quick-select) ══ */}
+          {addrLoaded && savedAddrs.length > 0 && (
+            <div>
+              <p className="text-xs text-gray-500 font-medium mb-2 px-1">📂 ที่อยู่ที่บันทึกไว้</p>
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {savedAddrs.map(addr => (
+                  <div key={addr.id}
+                    className="flex-shrink-0 bg-white border border-gray-200 rounded-xl px-3 py-2 shadow-sm min-w-[140px] max-w-[180px]">
+                    <div className="flex items-center justify-between mb-1">
+                      <button onClick={() => applyAddress(addr)}
+                        className="font-semibold text-green-700 text-sm truncate flex-1 text-left">
+                        {ADDR_LABEL_EMOJI[addr.label] || '📍'} {addr.label}
+                        {addr.is_default && <span className="ml-1 text-xs text-gray-400">★</span>}
+                      </button>
+                      <div className="flex gap-1 ml-1 flex-shrink-0">
+                        <button onClick={() => { setEditAddr(addr); setSaveLabel(addr.label); setSaveDialog(true); }}
+                          className="text-gray-400 text-xs p-0.5">✏️</button>
+                        <button onClick={() => handleDeleteAddress(addr)}
+                          className="text-gray-400 text-xs p-0.5">🗑️</button>
+                      </div>
+                    </div>
+                    <button onClick={() => applyAddress(addr)}
+                      className="text-xs text-gray-500 truncate text-left w-full">
+                      {[addr.house_no, addr.district && `อ.${addr.district}`, addr.province && `จ.${addr.province}`].filter(Boolean).join(' ')}
+                    </button>
+                  </div>
+                ))}
+                {savedAddrs.length < 3 && (
+                  <button onClick={() => { setEditAddr(null); setSaveLabel('บ้าน'); setSaveDialog(true); }}
+                    className="flex-shrink-0 border-2 border-dashed border-gray-300 rounded-xl px-4 py-2 text-gray-400 text-sm font-medium min-w-[100px] flex flex-col items-center justify-center gap-1">
+                    <span className="text-xl">+</span>
+                    <span className="text-xs">เพิ่มที่อยู่</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* ต้นทาง */}
           <Card title="📍 สถานที่รับ (ต้นทาง)">
             <div className="grid grid-cols-2 gap-2">
@@ -247,6 +365,16 @@ export default function BookingPage({ user }) {
             }
           </Card>
 
+          {/* 💾 บันทึกที่อยู่นี้ */}
+          {pickup.houseNo && pickup.province && (
+            <button
+              onClick={() => { setEditAddr(null); setSaveLabel('บ้าน'); setSaveDialog(true); }}
+              className="w-full py-2.5 rounded-xl border border-dashed border-blue-400 text-blue-600 text-sm font-medium flex items-center justify-center gap-2 bg-blue-50 active:bg-blue-100"
+            >
+              💾 บันทึกที่อยู่นี้ไว้ใช้ครั้งหน้า
+            </button>
+          )}
+
           {/* เวลารับ */}
           <Card title="🕐 เวลารับ *">
             <input className="input-field" type="datetime-local" value={scheduledAt}
@@ -255,6 +383,53 @@ export default function BookingPage({ user }) {
           </Card>
         </div>
         <BottomBar label="ถัดไป: ปลายทาง →" disabled={!step1Valid || !scheduledAt} onClick={() => setStep(2)} />
+
+        {/* ══ Save Address Dialog ══ */}
+        {saveDialog && (
+          <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50" onClick={() => setSaveDialog(false)}>
+            <div className="w-full max-w-md bg-white rounded-t-2xl p-5 pb-8" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-4">
+                <p className="font-bold text-gray-800 text-base">
+                  {editAddr ? '✏️ แก้ไขที่อยู่' : '💾 บันทึกที่อยู่'}
+                </p>
+                <button onClick={() => setSaveDialog(false)} className="text-gray-400 text-xl leading-none">✕</button>
+              </div>
+
+              <label className="text-sm text-gray-600 mb-1 block">ชื่อที่อยู่</label>
+              <div className="flex gap-2 flex-wrap mb-3">
+                {['บ้าน', 'โรงพยาบาล', 'ที่ทำงาน', 'อื่นๆ'].map(preset => (
+                  <button key={preset} onClick={() => setSaveLabel(preset)}
+                    className={`px-3 py-1 rounded-full text-sm border transition-all ${saveLabel === preset ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-300'}`}>
+                    {ADDR_LABEL_EMOJI[preset] || '📍'} {preset}
+                  </button>
+                ))}
+              </div>
+              <input
+                className="input-field mb-1"
+                value={saveLabel}
+                onChange={e => setSaveLabel(e.target.value)}
+                placeholder="หรือพิมพ์ชื่อเอง เช่น แม่, ปู่, ตา..."
+                maxLength={20}
+              />
+              {editAddr && (
+                <p className="text-xs text-gray-400 mb-3">
+                  ที่อยู่จะอัปเดตเป็นข้อมูลปัจจุบันในฟอร์ม
+                </p>
+              )}
+              {!editAddr && (
+                <p className="text-xs text-gray-400 mb-3">
+                  📍 {[pickup.houseNo, pickup.district && `อ.${pickup.district}`, pickup.province && `จ.${pickup.province}`].filter(Boolean).join(' ')}
+                </p>
+              )}
+              <button
+                onClick={handleSaveAddress}
+                disabled={!saveLabel.trim()}
+                className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
+                {editAddr ? 'บันทึกการแก้ไข' : 'บันทึกที่อยู่นี้'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }

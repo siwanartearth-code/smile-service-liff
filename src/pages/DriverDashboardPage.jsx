@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { driversAPI, bookingsAPI } from '../services/api';
 import liff from '@line/liff';
 
@@ -7,7 +7,10 @@ export default function DriverDashboardPage({ user }) {
   const [jobs, setJobs] = useState([]);
   const [activeJob, setActiveJob] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState('upcoming'); // upcoming | active | history
+  const [tab, setTab] = useState('upcoming');
+  const [isSendingGPS, setIsSendingGPS] = useState(false);
+  const locationIntervalRef = useRef(null);
+  const lastSentRef = useRef(0);
 
   useEffect(() => {
     Promise.all([
@@ -22,6 +25,41 @@ export default function DriverDashboardPage({ user }) {
     }).catch(console.error)
       .finally(() => setLoading(false));
   }, [tab]);
+
+  // ── Auto-send GPS เมื่อรับงานอยู่ ────────────────────────────────────────────
+  useEffect(() => {
+    const job = activeJob;
+    const shouldTrack = job && ['driver_arrived', 'in_progress', 'confirmed'].includes(job.status);
+
+    if (!shouldTrack) {
+      clearInterval(locationIntervalRef.current);
+      setIsSendingGPS(false);
+      return;
+    }
+
+    const sendLocation = () => {
+      if (!navigator.geolocation) return;
+      const now = Date.now();
+      if (now - lastSentRef.current < 8000) return; // throttle 8 วิ
+      lastSentRef.current = now;
+
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          try {
+            await bookingsAPI.updateLocation(job.id, pos.coords.latitude, pos.coords.longitude);
+            setIsSendingGPS(true);
+            setTimeout(() => setIsSendingGPS(false), 2000);
+          } catch (e) { console.error('[GPS]', e.message); }
+        },
+        (err) => console.error('[GPS]', err.message),
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 5000 }
+      );
+    };
+
+    sendLocation(); // ส่งทันที
+    locationIntervalRef.current = setInterval(sendLocation, 10000);
+    return () => clearInterval(locationIntervalRef.current);
+  }, [activeJob?.id, activeJob?.status]);
 
   const toggleOnline = async () => {
     const newState = !driver.is_online;
@@ -94,7 +132,15 @@ export default function DriverDashboardPage({ user }) {
         {/* Active Job Card */}
         {activeJob && (
           <div className="card bg-orange-50 border-2 border-orange-300">
-            <p className="font-bold text-orange-700 mb-2">🚗 งานปัจจุบัน</p>
+            <div className="flex items-center justify-between mb-2">
+              <p className="font-bold text-orange-700">🚗 งานปัจจุบัน</p>
+              {isSendingGPS && (
+                <span className="text-xs text-green-600 flex items-center gap-1">
+                  <span className="w-2 h-2 bg-green-500 rounded-full animate-ping" />
+                  📡 ส่งพิกัด
+                </span>
+              )}
+            </div>
             <p className="text-sm text-gray-700">📍 {activeJob.pickup_address}</p>
             <p className="text-sm text-gray-700">🏥 {activeJob.dropoff_address}</p>
             <p className="text-sm font-semibold text-gray-800 mt-1">👤 {activeJob.passenger_name}</p>

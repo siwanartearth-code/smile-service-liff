@@ -20,6 +20,7 @@ export const bookingsAPI = {
   getBooking: (id) => api.get(`/bookings/${id}`),
   createBooking: (data) => api.post('/bookings', data),
   updateStatus: (id, status, lat, lng) => api.patch(`/bookings/${id}/status`, { status, lat, lng }),
+  updateLocation: (id, lat, lng) => api.patch(`/bookings/${id}/location`, { lat, lng }),
   submitReview: (id, data) => api.post(`/bookings/${id}/review`, data),
   getEstimate: (carType, distanceKm, durationMin) =>
     api.post('/pricing/estimate', { car_type: carType, distance_km: distanceKm, duration_min: durationMin }),
@@ -34,6 +35,14 @@ export const driversAPI = {
   setNotifyWhenOffline: (val) => api.patch('/drivers/me/notify-offline', { notify_when_offline: val }),
   getAvailability: () => api.get('/drivers/me/availability'),
   setAvailability: (slots) => api.put('/drivers/me/availability', { availability: slots }),
+};
+
+export const addressesAPI = {
+  getAll:    ()       => api.get('/addresses'),
+  save:      (data)   => api.post('/addresses', data),
+  update:    (id, data) => api.put(`/addresses/${id}`, data),
+  remove:    (id)     => api.delete(`/addresses/${id}`),
+  recordUse: (id)     => api.patch(`/addresses/${id}/use`),
 };
 
 export const pricingAPI = {
