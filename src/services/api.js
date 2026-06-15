@@ -45,6 +45,11 @@ export const addressesAPI = {
   recordUse: (id)     => api.patch(`/addresses/${id}/use`),
 };
 
+export const paymentsAPI = {
+  initiate:  (bookingId, amount) => api.post('/payments/initiate', { booking_id: bookingId, amount }),
+  getStatus: (bookingId)         => api.get(`/payments/booking/${bookingId}`),
+};
+
 export const pricingAPI = {
   getPackages: () => api.get('/pricing/packages'),
   getPricing: () => api.get('/pricing'),

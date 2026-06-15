@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { bookingsAPI, addressesAPI } from '../services/api';
+import PaymentPage from './PaymentPage';
 import liff from '@line/liff';
 import { PROVINCES, getDistricts, getSubdistricts, haversineKm } from '../data/thaiLocations';
 import { getHospitals } from '../data/hospitals';
@@ -35,6 +36,7 @@ export default function BookingPage({ user }) {
   const [estimate, setEstimate] = useState(null);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(null);
+  const [paymentInfo, setPaymentInfo] = useState(null); // { bookingId, bookingNumber, amount }
   // MapPicker state
   const [mapTarget, setMapTarget] = useState(null); // 'pickup' | 'dest'
   // Saved addresses
@@ -207,6 +209,12 @@ export default function BookingPage({ user }) {
       };
       const { data } = await bookingsAPI.createBooking(payload);
       setSuccess(data);
+      // ไปหน้าชำระเงินก่อน
+      setPaymentInfo({
+        bookingId:     data.booking?.id,
+        bookingNumber: data.booking?.booking_number,
+        amount:        estimate?.total || effectiveDistance * 20,
+      });
       setStep(5);
     } catch (err) {
       alert('เกิดข้อผิดพลาด: ' + (err.response?.data?.error || err.message));
@@ -632,20 +640,27 @@ export default function BookingPage({ user }) {
   // ════════════════════════════════════════════════════════════════
   // STEP 5 — สำเร็จ
   // ════════════════════════════════════════════════════════════════
-  if (step === 5 && success) return (
-    <div className="min-h-screen bg-green-50 flex flex-col items-center justify-center p-6 text-center">
-      <div className="text-6xl mb-4">🎉</div>
-      <h2 className="text-xl font-bold text-green-800">จองสำเร็จแล้ว!</h2>
-      <p className="text-green-600 mt-1">กำลังหาคนขับให้คุณ...</p>
-      <div className="card mt-6 w-full text-left space-y-1 text-sm">
-        <Row label="🔖 หมายเลข" value={success.booking?.booking_number} bold />
-        <Row label="📏 ระยะทาง" value={`${effectiveDistance} กม.`} />
-        <Row label="🔍 คนขับที่แจ้ง" value={`${success.driversNotified || 0} คน`} />
+  // ── Step 5: ชำระเงิน (หรือสำเร็จถ้าไม่มีข้อมูล payment) ───────────────────
+  if (step === 5) {
+    if (paymentInfo?.bookingId) {
+      return (
+        <PaymentPage
+          bookingId={paymentInfo.bookingId}
+          bookingNumber={paymentInfo.bookingNumber}
+          estimatedAmount={paymentInfo.amount}
+        />
+      );
+    }
+    // fallback: ไม่มี bookingId
+    return (
+      <div className="min-h-screen bg-green-50 flex flex-col items-center justify-center p-6 text-center">
+        <div className="text-6xl mb-4">🎉</div>
+        <h2 className="text-xl font-bold text-green-800">จองสำเร็จแล้ว!</h2>
+        <p className="text-green-600 mt-1">กำลังหาคนขับให้คุณ...</p>
+        <button onClick={() => liff.closeWindow()} className="btn-primary mt-6">ปิดหน้าต่าง</button>
       </div>
-      <p className="text-xs text-gray-400 mt-4">คนขับจะยืนยัน / เสนอปรับระยะทางก่อนเริ่มเดินทาง</p>
-      <button onClick={() => liff.closeWindow()} className="btn-primary mt-6">ปิดหน้าต่าง</button>
-    </div>
-  );
+    );
+  }
 
   return null;
 }
