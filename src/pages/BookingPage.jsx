@@ -1,52 +1,133 @@
-import { useState, useEffect } from 'react';
-import { bookingsAPI, pricingAPI } from '../services/api';
+import { useState, useEffect, useCallback } from 'react';
+import { bookingsAPI } from '../services/api';
 import liff from '@line/liff';
+import { PROVINCES, getDistricts, getSubdistricts, haversineKm } from '../data/thaiLocations';
+import { getHospitals } from '../data/hospitals';
+import MapPicker from '../components/MapPicker';
 
 const CAR_TYPES = [
-  { value: 'sedan',         label: '🚗 รถเก๋ง',          desc: 'สะดวก ประหยัด' },
-  { value: 'van',           label: '🚐 รถตู้',           desc: 'กว้างขวาง นั่งสบาย' },
-  { value: 'wheelchair_van',label: '♿ รถวีลแชร์',        desc: 'สำหรับผู้ใช้วีลแชร์' },
-  { value: 'ev_sedan',      label: '⚡ รถไฟฟ้าเก๋ง',    desc: 'เงียบ ประหยัด' },
+  { value: 'sedan',          label: '🚗 รถเก๋ง',       desc: 'สะดวก ประหยัด' },
+  { value: 'van',            label: '🚐 รถตู้',        desc: 'กว้างขวาง นั่งสบาย' },
+  { value: 'wheelchair_van', label: '♿ รถวีลแชร์',     desc: 'สำหรับผู้ใช้วีลแชร์' },
+  { value: 'ev_sedan',       label: '⚡ รถไฟฟ้าเก๋ง', desc: 'เงียบ ประหยัด' },
 ];
 
+const DEST_TYPE = { HOSPITAL: 'hospital', OTHER: 'other' };
+
+function initPickup() {
+  return { houseNo: '', moo: '', soi: '', road: '', detail: '', province: '', district: '', subdistrict: '', lat: null, lng: null };
+}
+function initDest() {
+  return { type: DEST_TYPE.HOSPITAL, province: '', district: '', hospital: '', hospitalLat: null, hospitalLng: null, other: '', otherLat: null, otherLng: null };
+}
+
 export default function BookingPage({ user }) {
-  const [step, setStep] = useState(1);
-  const [form, setForm] = useState({
-    passenger_name: user?.display_name || '',
-    passenger_phone: '',
-    passenger_note: '',
-    pickup_address: '',
-    dropoff_address: '',
-    scheduled_at: '',
-    car_type: 'sedan',
-    booking_type: 'available',
-    estimated_distance: 10,
-    estimated_duration: 30,
-  });
+  const [step, setStep]       = useState(1);
+  const [passenger, setPass]  = useState({ name: user?.display_name || '', phone: '', note: '' });
+  const [pickup, setPickup]   = useState(initPickup());
+  const [dest, setDest]       = useState(initDest());
+  const [carType, setCarType] = useState('sedan');
+  const [scheduledAt, setSched] = useState('');
+  const [distance, setDist]   = useState(null);          // คำนวณ auto
+  const [distOverride, setDistOverride] = useState('');  // แก้ manual
   const [estimate, setEstimate] = useState(null);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(null);
+  // MapPicker state
+  const [mapTarget, setMapTarget] = useState(null); // 'pickup' | 'dest'
 
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const setP = (k, v) => setPass(p => ({ ...p, [k]: v }));
+  const setPick = (k, v) => setPickup(p => ({ ...p, [k]: v }));
+  const setDe = (k, v) => setDest(d => ({ ...d, [k]: v }));
 
-  // ดึงราคาประมาณ เมื่อเปลี่ยนข้อมูล
+  // เมื่อยืนยันพิกัดจาก MapPicker
+  const handleMapConfirm = useCallback(({ lat, lng, geo }) => {
+    if (mapTarget === 'pickup') {
+      setPick('lat', lat);
+      setPick('lng', lng);
+      // auto-fill ที่อยู่จาก reverse geocode (ถ้ามี)
+      if (geo) {
+        if (geo.road && !pickup.road)      setPick('road', geo.road);
+        // ไม่ force-overwrite province/district เพราะ Nominatim คืน EN บางที
+        // แต่ถ้ายังไม่ได้เลือกไว้ ลองใส่ให้ (คร่าวๆ)
+      }
+    } else if (mapTarget === 'dest') {
+      setDe('otherLat', lat);
+      setDe('otherLng', lng);
+      if (geo?.display && !dest.other) setDe('other', geo.display.slice(0, 200));
+    }
+    setMapTarget(null);
+  }, [mapTarget, pickup, dest]);
+
+  // ── คำนวณระยะทาง อัตโนมัติเมื่อมีพิกัดทั้งสองจุด ──────────────
+  const pickLat = pickup.lat, pickLng = pickup.lng;
+  const destLat = dest.type === DEST_TYPE.HOSPITAL ? dest.hospitalLat : dest.otherLat;
+  const destLng = dest.type === DEST_TYPE.HOSPITAL ? dest.hospitalLng : dest.otherLng;
+
   useEffect(() => {
-    if (!form.car_type || !form.estimated_distance) return;
-    const timer = setTimeout(async () => {
+    if (pickLat && pickLng && destLat && destLng) {
+      const km = haversineKm(pickLat, pickLng, destLat, destLng);
+      setDist(km);
+      setDistOverride('');
+    }
+  }, [pickLat, pickLng, destLat, destLng]);
+
+  const effectiveDistance = distOverride ? parseFloat(distOverride) : (distance || 10);
+
+  // ── ดึงราคาประมาณ ───────────────────────────────────────────────
+  useEffect(() => {
+    if (!carType || !effectiveDistance) return;
+    const t = setTimeout(async () => {
       try {
-        const { data } = await bookingsAPI.getEstimate(form.car_type, form.estimated_distance, form.estimated_duration);
+        const { data } = await bookingsAPI.getEstimate(carType, effectiveDistance, Math.round(effectiveDistance * 2.5));
         setEstimate(data);
       } catch {}
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [form.car_type, form.estimated_distance, form.estimated_duration]);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [carType, effectiveDistance]);
 
+  // ── เปิด MapPicker ─────────────────────────────────────────────
+  const openMap = (target) => setMapTarget(target);
+
+  // ── ที่อยู่ต้นทางเป็น string ─────────────────────────────────────
+  const pickupAddress = [
+    pickup.houseNo && `${pickup.houseNo}`,
+    pickup.moo && `หมู่ ${pickup.moo}`,
+    pickup.soi && `ซอย${pickup.soi}`,
+    pickup.road && `ถนน${pickup.road}`,
+    pickup.detail,
+    pickup.subdistrict && `ต.${pickup.subdistrict}`,
+    pickup.district && `อ.${pickup.district}`,
+    pickup.province && `จ.${pickup.province}`,
+  ].filter(Boolean).join(' ');
+
+  const dropoffAddress = dest.type === DEST_TYPE.HOSPITAL
+    ? [dest.hospital, dest.district && `อ.${dest.district}`, dest.province && `จ.${dest.province}`].filter(Boolean).join(' ')
+    : dest.other;
+
+  // ── Submit ──────────────────────────────────────────────────────
   const handleSubmit = async () => {
     setLoading(true);
     try {
-      const { data } = await bookingsAPI.createBooking(form);
+      const payload = {
+        passenger_name: passenger.name,
+        passenger_phone: passenger.phone,
+        passenger_note: passenger.note,
+        pickup_address: pickupAddress,
+        pickup_lat: pickup.lat,
+        pickup_lng: pickup.lng,
+        dropoff_address: dropoffAddress,
+        dropoff_lat: destLat,
+        dropoff_lng: destLng,
+        scheduled_at: scheduledAt,
+        car_type: carType,
+        booking_type: 'available',
+        estimated_distance: effectiveDistance,
+        estimated_duration: Math.round(effectiveDistance * 2.5),
+      };
+      const { data } = await bookingsAPI.createBooking(payload);
       setSuccess(data);
-      setStep(4);
+      setStep(5);
     } catch (err) {
       alert('เกิดข้อผิดพลาด: ' + (err.response?.data?.error || err.message));
     } finally {
@@ -54,116 +135,304 @@ export default function BookingPage({ user }) {
     }
   };
 
-  // ── Step 1: ข้อมูลผู้โดยสาร ──────────────────────────────────────────────
-  if (step === 1) return (
-    <div className="min-h-screen bg-gray-50 pb-24">
-      <Header title="จองรถรับส่ง" />
-      <div className="p-4 space-y-4">
-        <div className="card">
-          <p className="section-title">👤 ข้อมูลผู้โดยสาร</p>
-          <div className="space-y-3">
-            <div>
-              <label className="text-sm text-gray-600 mb-1 block">ชื่อผู้โดยสาร *</label>
-              <input className="input-field" value={form.passenger_name}
-                onChange={e => set('passenger_name', e.target.value)} placeholder="ชื่อ-นามสกุล" />
-            </div>
-            <div>
-              <label className="text-sm text-gray-600 mb-1 block">เบอร์โทร</label>
-              <input className="input-field" value={form.passenger_phone} type="tel"
-                onChange={e => set('passenger_phone', e.target.value)} placeholder="08x-xxx-xxxx" />
-            </div>
-            <div>
-              <label className="text-sm text-gray-600 mb-1 block">หมายเหตุพิเศษ</label>
-              <textarea className="input-field" rows={2} value={form.passenger_note}
-                onChange={e => set('passenger_note', e.target.value)}
-                placeholder="เช่น: ใช้ walker ต้องช่วยขึ้นรถ, ต้องการนั่งตรงหน้า" />
-            </div>
-          </div>
-        </div>
+  // ── MapPicker Modal (แสดงซ้อนทุก step เมื่อเปิดอยู่) ─────────────
+  if (mapTarget) {
+    const isPickup = mapTarget === 'pickup';
+    return (
+      <MapPicker
+        label={isPickup ? 'เลือกตำแหน่งรับ (ต้นทาง)' : 'เลือกตำแหน่งปลายทาง'}
+        initialLat={isPickup ? (pickup.lat || 16.4326) : (dest.otherLat || 16.4326)}
+        initialLng={isPickup ? (pickup.lng || 102.8282) : (dest.otherLng || 102.8282)}
+        onConfirm={handleMapConfirm}
+        onClose={() => setMapTarget(null)}
+      />
+    );
+  }
 
-        <div className="card">
-          <p className="section-title">📍 สถานที่</p>
-          <div className="space-y-3">
-            <div>
-              <label className="text-sm text-gray-600 mb-1 block">รับที่ (ต้นทาง) *</label>
-              <input className="input-field" value={form.pickup_address}
-                onChange={e => set('pickup_address', e.target.value)} placeholder="บ้านเลขที่ ถนน แขวง เขต" />
-            </div>
-            <div>
-              <label className="text-sm text-gray-600 mb-1 block">ส่งที่ (ปลายทาง) *</label>
-              <input className="input-field" value={form.dropoff_address}
-                onChange={e => set('dropoff_address', e.target.value)} placeholder="โรงพยาบาล / ที่หมาย" />
-            </div>
-            <div>
-              <label className="text-sm text-gray-600 mb-1 block">ระยะทางโดยประมาณ (กม.)</label>
-              <input className="input-field" type="number" value={form.estimated_distance} min="1" max="200"
-                onChange={e => set('estimated_distance', parseFloat(e.target.value))} />
-            </div>
-          </div>
-        </div>
+  // ════════════════════════════════════════════════════════════════
+  // STEP 1 — ข้อมูลผู้โดยสาร + ต้นทาง
+  // ════════════════════════════════════════════════════════════════
+  if (step === 1) {
+    const pickDistricts = getDistricts(
+      PROVINCES.find(p => p.name === pickup.province)?.code || ''
+    );
+    const pickSubs = getSubdistricts(
+      pickDistricts.find(d => d.name === pickup.district)?.code || ''
+    );
 
-        <div className="card">
-          <p className="section-title">🕐 เวลารับ *</p>
-          <input className="input-field" type="datetime-local" value={form.scheduled_at}
-            min={new Date(Date.now() + 30*60000).toISOString().slice(0,16)}
-            onChange={e => set('scheduled_at', e.target.value)} />
+    const onSubSelect = (name) => {
+      const sub = pickSubs.find(s => s.name === name);
+      setPick('subdistrict', name);
+      if (sub?.lat) { setPick('lat', sub.lat); setPick('lng', sub.lng); }
+    };
+
+    const step1Valid = passenger.name && pickup.houseNo && pickup.province && pickup.district;
+
+    return (
+      <div className="min-h-screen bg-gray-50 pb-28">
+        <Header title="จองรถรับส่ง" />
+        <div className="p-4 space-y-4">
+
+          {/* ผู้โดยสาร */}
+          <Card title="👤 ข้อมูลผู้โดยสาร">
+            <Field label="ชื่อผู้โดยสาร *">
+              <input className="input-field" value={passenger.name} onChange={e => setP('name', e.target.value)} placeholder="ชื่อ-นามสกุล" />
+            </Field>
+            <Field label="เบอร์โทร">
+              <input className="input-field" type="tel" value={passenger.phone} onChange={e => setP('phone', e.target.value)} placeholder="08x-xxx-xxxx" />
+            </Field>
+            <Field label="หมายเหตุพิเศษ">
+              <textarea className="input-field" rows={2} value={passenger.note} onChange={e => setP('note', e.target.value)} placeholder="เช่น: ใช้ walker, ต้องการนั่งตรงหน้า" />
+            </Field>
+          </Card>
+
+          {/* ต้นทาง */}
+          <Card title="📍 สถานที่รับ (ต้นทาง)">
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="บ้านเลขที่ *">
+                <input className="input-field" value={pickup.houseNo} onChange={e => setPick('houseNo', e.target.value)} placeholder="123/45" />
+              </Field>
+              <Field label="หมู่ที่">
+                <input className="input-field" value={pickup.moo} onChange={e => setPick('moo', e.target.value)} placeholder="1" />
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="ซอย">
+                <input className="input-field" value={pickup.soi} onChange={e => setPick('soi', e.target.value)} placeholder="ซอย..." />
+              </Field>
+              <Field label="ถนน">
+                <input className="input-field" value={pickup.road} onChange={e => setPick('road', e.target.value)} placeholder="ถนน..." />
+              </Field>
+            </div>
+            <Field label="รายละเอียดเพิ่มเติม">
+              <input className="input-field" value={pickup.detail} onChange={e => setPick('detail', e.target.value)} placeholder="เช่น: บ้านสีเขียว ใกล้วัด" />
+            </Field>
+
+            <div className="border-t border-gray-100 pt-3 mt-1 space-y-2">
+              <Field label="จังหวัด *">
+                <select className="input-field" value={pickup.province} onChange={e => { setPick('province', e.target.value); setPick('district', ''); setPick('subdistrict', ''); setPick('lat', null); setPick('lng', null); }}>
+                  <option value="">-- เลือกจังหวัด --</option>
+                  {PROVINCES.map(p => <option key={p.code} value={p.name}>{p.name}</option>)}
+                </select>
+              </Field>
+              <Field label="อำเภอ/เขต *">
+                <select className="input-field" value={pickup.district} onChange={e => { setPick('district', e.target.value); setPick('subdistrict', ''); }} disabled={!pickup.province || pickDistricts.length === 0}>
+                  <option value="">-- เลือกอำเภอ --</option>
+                  {pickDistricts.map(d => <option key={d.code} value={d.name}>{d.name}</option>)}
+                </select>
+                {pickup.province && pickDistricts.length === 0 && <p className="text-xs text-orange-500 mt-1">กรุณาพิมพ์ชื่ออำเภอด้วยตนเอง</p>}
+                {pickup.province && pickDistricts.length === 0 && <input className="input-field mt-1" value={pickup.district} onChange={e => setPick('district', e.target.value)} placeholder="พิมพ์ชื่ออำเภอ" />}
+              </Field>
+              <Field label="ตำบล/แขวง">
+                {pickSubs.length > 0
+                  ? <select className="input-field" value={pickup.subdistrict} onChange={e => onSubSelect(e.target.value)}>
+                      <option value="">-- เลือกตำบล --</option>
+                      {pickSubs.map(s => <option key={s.code} value={s.name}>{s.name}</option>)}
+                    </select>
+                  : <input className="input-field" value={pickup.subdistrict} onChange={e => setPick('subdistrict', e.target.value)} placeholder="พิมพ์ชื่อตำบล" />
+                }
+              </Field>
+            </div>
+
+            {/* Map Pin Button */}
+            <button
+              onClick={() => openMap('pickup')}
+              className="mt-3 w-full py-3 rounded-xl border-2 border-dashed border-green-400 text-green-700 text-sm font-semibold flex items-center justify-center gap-2 bg-green-50 active:bg-green-100"
+            >
+              🗺️ {pickup.lat ? 'เปลี่ยนตำแหน่งบนแผนที่' : 'เลือกตำแหน่งบนแผนที่'}
+            </button>
+            {pickup.lat
+              ? <p className="text-xs text-green-600 text-center mt-1">✅ ปักหมุดแล้ว ({pickup.lat.toFixed(4)}, {pickup.lng.toFixed(4)}) — กดเพื่อเลื่อนหมุด</p>
+              : <p className="text-xs text-gray-400 text-center mt-1">💡 แตะเพื่อเลือกตำแหน่งบนแผนที่ — เลื่อนหมุดได้เองถ้าจองให้ผู้อื่น</p>
+            }
+          </Card>
+
+          {/* เวลารับ */}
+          <Card title="🕐 เวลารับ *">
+            <input className="input-field" type="datetime-local" value={scheduledAt}
+              min={new Date(Date.now() + 30*60000).toISOString().slice(0,16)}
+              onChange={e => setSched(e.target.value)} />
+          </Card>
         </div>
+        <BottomBar label="ถัดไป: ปลายทาง →" disabled={!step1Valid || !scheduledAt} onClick={() => setStep(2)} />
       </div>
-      <BottomBar
-        label="ถัดไป: เลือกประเภทรถ →"
-        disabled={!form.passenger_name || !form.pickup_address || !form.dropoff_address || !form.scheduled_at}
-        onClick={() => setStep(2)} />
-    </div>
-  );
+    );
+  }
 
-  // ── Step 2: เลือกประเภทรถ ────────────────────────────────────────────────
-  if (step === 2) return (
-    <div className="min-h-screen bg-gray-50 pb-24">
-      <Header title="เลือกประเภทรถ" onBack={() => setStep(1)} />
+  // ════════════════════════════════════════════════════════════════
+  // STEP 2 — ปลายทาง
+  // ════════════════════════════════════════════════════════════════
+  if (step === 2) {
+    const destDistricts = getDistricts(
+      PROVINCES.find(p => p.name === dest.province)?.code || ''
+    );
+    const hospitals = getHospitals(
+      destDistricts.find(d => d.name === dest.district)?.code || ''
+    );
+
+    const onHospitalSelect = (name) => {
+      setDe('hospital', name);
+      const h = hospitals.find(h => h.name === name);
+      if (h?.lat) { setDe('hospitalLat', h.lat); setDe('hospitalLng', h.lng); }
+      else { setDe('hospitalLat', null); setDe('hospitalLng', null); }
+    };
+
+    const step2Valid = dest.type === DEST_TYPE.HOSPITAL
+      ? (dest.hospital)
+      : (dest.other);
+
+    return (
+      <div className="min-h-screen bg-gray-50 pb-28">
+        <Header title="เลือกปลายทาง" onBack={() => setStep(1)} />
+        <div className="p-4 space-y-4">
+
+          {/* ประเภทปลายทาง */}
+          <div className="flex rounded-xl overflow-hidden border border-gray-200">
+            {[{ v: DEST_TYPE.HOSPITAL, label: '🏥 โรงพยาบาล' }, { v: DEST_TYPE.OTHER, label: '📌 สถานที่อื่น' }].map(t => (
+              <button key={t.v} onClick={() => setDe('type', t.v)}
+                className={`flex-1 py-3 text-sm font-semibold transition-all ${dest.type === t.v ? 'bg-green-600 text-white' : 'bg-white text-gray-600'}`}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {dest.type === DEST_TYPE.HOSPITAL && (
+            <Card title="🏥 เลือกโรงพยาบาล">
+              <Field label="จังหวัด">
+                <select className="input-field" value={dest.province} onChange={e => { setDe('province', e.target.value); setDe('district', ''); setDe('hospital', ''); }}>
+                  <option value="">-- เลือกจังหวัด --</option>
+                  {PROVINCES.map(p => <option key={p.code} value={p.name}>{p.name}</option>)}
+                </select>
+              </Field>
+              <Field label="อำเภอ/เขต">
+                <select className="input-field" value={dest.district} onChange={e => { setDe('district', e.target.value); setDe('hospital', ''); }} disabled={!dest.province || destDistricts.length === 0}>
+                  <option value="">-- เลือกอำเภอ --</option>
+                  {destDistricts.map(d => <option key={d.code} value={d.name}>{d.name}</option>)}
+                </select>
+                {dest.province && destDistricts.length === 0 && <input className="input-field mt-1" value={dest.district} onChange={e => { setDe('district', e.target.value); setDe('hospital', ''); }} placeholder="พิมพ์ชื่ออำเภอ" />}
+              </Field>
+              <Field label="โรงพยาบาล">
+                {hospitals.length > 0
+                  ? <select className="input-field" value={dest.hospital} onChange={e => onHospitalSelect(e.target.value)}>
+                      <option value="">-- เลือกโรงพยาบาล --</option>
+                      {hospitals.map(h => <option key={h.name} value={h.name}>{h.name}</option>)}
+                    </select>
+                  : <input className="input-field" value={dest.hospital} onChange={e => setDe('hospital', e.target.value)} placeholder="พิมพ์ชื่อโรงพยาบาล" />
+                }
+              </Field>
+              {dest.hospitalLat && <p className="text-xs text-green-600 mt-1">✅ มีพิกัดโรงพยาบาล (จะคำนวณระยะทางอัตโนมัติ)</p>}
+            </Card>
+          )}
+
+          {dest.type === DEST_TYPE.OTHER && (
+            <Card title="📌 สถานที่อื่น">
+              <Field label="ชื่อสถานที่ / ที่อยู่">
+                <textarea className="input-field" rows={3} value={dest.other} onChange={e => setDe('other', e.target.value)} placeholder="เช่น: 123 ถ.มิตรภาพ ต.ในเมือง อ.เมือง จ.ขอนแก่น" />
+              </Field>
+              <button onClick={() => openMap('dest')}
+                className="mt-2 w-full py-3 rounded-xl border-2 border-dashed border-green-400 text-green-700 text-sm font-semibold flex items-center justify-center gap-2 bg-green-50 active:bg-green-100">
+                🗺️ {dest.otherLat ? 'เปลี่ยนตำแหน่งบนแผนที่' : 'เลือกตำแหน่งบนแผนที่'}
+              </button>
+              {dest.otherLat
+                ? <p className="text-xs text-green-600 text-center mt-1">✅ ปักหมุดแล้ว ({dest.otherLat.toFixed(4)}, {dest.otherLng.toFixed(4)}) — กดเพื่อเลื่อนหมุด</p>
+                : <p className="text-xs text-gray-400 text-center mt-1">💡 เลื่อนหมุดบนแผนที่เพื่อระบุตำแหน่งที่แน่นอน</p>
+              }
+            </Card>
+          )}
+
+          {/* แสดงระยะทาง */}
+          {distance !== null && (
+            <div className="card bg-blue-50 border border-blue-200">
+              <p className="text-sm text-blue-800 font-semibold">📏 ระยะทางโดยประมาณ (คำนวณอัตโนมัติ)</p>
+              <p className="text-2xl font-bold text-blue-900 mt-1">{distance} กม. <span className="text-sm font-normal text-blue-600">(เส้นตรง)</span></p>
+              <p className="text-xs text-blue-500 mt-1">ระยะทางจริงบนถนนอาจต่างจากนี้ — คนขับและลูกค้าสามารถเสนอแก้ไขได้หลังจับคู่</p>
+            </div>
+          )}
+        </div>
+        <BottomBar label="ถัดไป: เลือกรถ →" disabled={!step2Valid} onClick={() => setStep(3)} />
+      </div>
+    );
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // STEP 3 — เลือกรถ + ระยะทาง
+  // ════════════════════════════════════════════════════════════════
+  if (step === 3) return (
+    <div className="min-h-screen bg-gray-50 pb-28">
+      <Header title="เลือกประเภทรถ" onBack={() => setStep(2)} />
       <div className="p-4 space-y-3">
         {CAR_TYPES.map(ct => (
-          <button key={ct.value} onClick={() => set('car_type', ct.value)}
-            className={`card w-full text-left flex items-center gap-4 transition-all ${form.car_type === ct.value ? 'ring-2 ring-green-500 bg-green-50' : ''}`}>
+          <button key={ct.value} onClick={() => setCarType(ct.value)}
+            className={`card w-full text-left flex items-center gap-4 transition-all ${carType === ct.value ? 'ring-2 ring-green-500 bg-green-50' : ''}`}>
             <span className="text-3xl">{ct.label.split(' ')[0]}</span>
             <div className="flex-1">
               <p className="font-semibold text-gray-800">{ct.label.slice(2)}</p>
               <p className="text-sm text-gray-500">{ct.desc}</p>
             </div>
-            {form.car_type === ct.value && <span className="text-green-500 text-xl">✓</span>}
+            {carType === ct.value && <span className="text-green-500 text-xl">✓</span>}
           </button>
         ))}
 
-        {/* Price estimate */}
+        {/* ระยะทาง */}
+        <Card title="📏 ระยะทาง">
+          {distance !== null
+            ? <>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <p className="text-sm text-gray-500">คำนวณอัตโนมัติ (เส้นตรง)</p>
+                    <p className="text-xl font-bold text-green-700">{distance} กม.</p>
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-sm text-gray-500 block mb-1">แก้ไขเป็น (กม.)</label>
+                    <input className="input-field" type="number" min="1" placeholder={distance}
+                      value={distOverride} onChange={e => setDistOverride(e.target.value)} />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-400 mt-2">💡 คนขับจะยืนยัน / เสนอแก้ไขระยะทางอีกครั้งก่อนเริ่มเดินทาง</p>
+              </>
+            : <>
+                <label className="text-sm text-gray-500 block mb-1">ระยะทาง (กม.) *</label>
+                <input className="input-field" type="number" min="1" max="500" value={distOverride || 10}
+                  onChange={e => setDistOverride(e.target.value)} />
+                <p className="text-xs text-gray-400 mt-1">ปักหมุด GPS ทั้ง 2 จุด ระบบจะคำนวณให้อัตโนมัติ</p>
+              </>
+          }
+        </Card>
+
         {estimate && (
           <div className="card bg-green-50 border border-green-200">
             <p className="font-semibold text-green-800 mb-2">💰 ราคาประมาณ</p>
             <div className="space-y-1 text-sm text-green-700">
               <div className="flex justify-between"><span>ค่าเริ่มต้น</span><span>฿{estimate.baseFare}</span></div>
-              <div className="flex justify-between"><span>ค่าระยะทาง ({form.estimated_distance} กม.)</span><span>฿{estimate.distanceFare}</span></div>
+              <div className="flex justify-between"><span>ค่าระยะทาง ({effectiveDistance} กม.)</span><span>฿{estimate.distanceFare}</span></div>
               <div className="flex justify-between font-bold text-base text-green-900 pt-1 border-t border-green-200">
                 <span>รวม</span><span>฿{estimate.total}</span>
               </div>
             </div>
-            <p className="text-xs text-gray-400 mt-2">*ราคาจริงอาจเปลี่ยนแปลงตามระยะทางจริง</p>
+            <p className="text-xs text-gray-400 mt-2">*ราคาจริงอาจต่างกันหลังตกลงระยะทาง</p>
           </div>
         )}
       </div>
-      <BottomBar label="ถัดไป: ยืนยันการจอง →" onClick={() => setStep(3)} />
+      <BottomBar label="ถัดไป: ยืนยัน →" onClick={() => setStep(4)} />
     </div>
   );
 
-  // ── Step 3: ยืนยัน ────────────────────────────────────────────────────────
-  if (step === 3) return (
-    <div className="min-h-screen bg-gray-50 pb-24">
-      <Header title="ยืนยันการจอง" onBack={() => setStep(2)} />
+  // ════════════════════════════════════════════════════════════════
+  // STEP 4 — ยืนยัน
+  // ════════════════════════════════════════════════════════════════
+  if (step === 4) return (
+    <div className="min-h-screen bg-gray-50 pb-28">
+      <Header title="ยืนยันการจอง" onBack={() => setStep(3)} />
       <div className="p-4 space-y-4">
         <div className="card space-y-2 text-sm">
-          <Row label="👤 ผู้โดยสาร" value={form.passenger_name} />
-          <Row label="📍 รับที่" value={form.pickup_address} />
-          <Row label="🏥 ส่งที่" value={form.dropoff_address} />
-          <Row label="🕐 เวลา" value={new Date(form.scheduled_at).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' })} />
-          <Row label="🚗 ประเภทรถ" value={CAR_TYPES.find(c => c.value === form.car_type)?.label} />
-          {form.passenger_note && <Row label="📝 หมายเหตุ" value={form.passenger_note} />}
+          <Row label="👤 ผู้โดยสาร" value={passenger.name} />
+          {passenger.phone && <Row label="📞 เบอร์โทร" value={passenger.phone} />}
+          <Row label="📍 รับที่" value={pickupAddress} />
+          <Row label="🏥 ส่งที่" value={dropoffAddress} />
+          <Row label="🕐 เวลา" value={new Date(scheduledAt).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' })} />
+          <Row label="🚗 ประเภทรถ" value={CAR_TYPES.find(c => c.value === carType)?.label} />
+          <Row label="📏 ระยะทาง" value={`${effectiveDistance} กม.`} />
+          {passenger.note && <Row label="📝 หมายเหตุ" value={passenger.note} />}
           {estimate && (
             <div className="pt-2 border-t border-gray-100">
               <Row label="💰 ราคาประมาณ" value={`฿${estimate.total}`} bold />
@@ -171,27 +440,34 @@ export default function BookingPage({ user }) {
           )}
         </div>
 
+        {(!pickup.lat || !destLat) && (
+          <div className="card bg-yellow-50 border border-yellow-200">
+            <p className="text-sm text-yellow-700">⚠️ ยังไม่มีพิกัด GPS ครบทั้งสองจุด — คนขับจะเสนอปรับระยะทางหลังรับงาน</p>
+          </div>
+        )}
+
         <div className="card bg-blue-50 border border-blue-100">
-          <p className="text-sm text-blue-700">
-            ℹ️ หลังจากยืนยัน ระบบจะหาคนขับให้คุณทันที คุณจะได้รับแจ้งเตือนเมื่อคนขับรับงาน
-          </p>
+          <p className="text-sm text-blue-700">ℹ️ หลังยืนยัน ระบบหาคนขับทันที คุณจะได้รับแจ้งเตือนทาง LINE เมื่อคนขับรับงาน</p>
         </div>
       </div>
       <BottomBar label={loading ? '⏳ กำลังส่งข้อมูล...' : '✅ ยืนยันการจอง'} onClick={handleSubmit} disabled={loading} />
     </div>
   );
 
-  // ── Step 4: สำเร็จ ────────────────────────────────────────────────────────
-  if (step === 4 && success) return (
+  // ════════════════════════════════════════════════════════════════
+  // STEP 5 — สำเร็จ
+  // ════════════════════════════════════════════════════════════════
+  if (step === 5 && success) return (
     <div className="min-h-screen bg-green-50 flex flex-col items-center justify-center p-6 text-center">
       <div className="text-6xl mb-4">🎉</div>
       <h2 className="text-xl font-bold text-green-800">จองสำเร็จแล้ว!</h2>
       <p className="text-green-600 mt-1">กำลังหาคนขับให้คุณ...</p>
       <div className="card mt-6 w-full text-left space-y-1 text-sm">
         <Row label="🔖 หมายเลข" value={success.booking?.booking_number} bold />
-        <Row label="🔍 คนขับที่แจ้งเตือน" value={`${success.driversNotified || 0} คน`} />
+        <Row label="📏 ระยะทาง" value={`${effectiveDistance} กม.`} />
+        <Row label="🔍 คนขับที่แจ้ง" value={`${success.driversNotified || 0} คน`} />
       </div>
-      <p className="text-xs text-gray-400 mt-4">คุณจะได้รับแจ้งเตือนทาง LINE เมื่อคนขับรับงาน</p>
+      <p className="text-xs text-gray-400 mt-4">คนขับจะยืนยัน / เสนอปรับระยะทางก่อนเริ่มเดินทาง</p>
       <button onClick={() => liff.closeWindow()} className="btn-primary mt-6">ปิดหน้าต่าง</button>
     </div>
   );
@@ -199,19 +475,37 @@ export default function BookingPage({ user }) {
   return null;
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+// ── Sub-components ────────────────────────────────────────────────
 function Header({ title, onBack }) {
   return (
     <div className="bg-white border-b border-gray-100 px-4 py-4 flex items-center gap-3 sticky top-0 z-10">
-      {onBack && <button onClick={onBack} className="text-xl">←</button>}
+      {onBack && <button onClick={onBack} className="text-xl text-gray-600">←</button>}
       <h1 className="font-bold text-gray-800 text-lg">{title}</h1>
+    </div>
+  );
+}
+
+function Card({ title, children }) {
+  return (
+    <div className="card">
+      {title && <p className="section-title mb-3">{title}</p>}
+      <div className="space-y-3">{children}</div>
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <div>
+      <label className="text-sm text-gray-600 mb-1 block">{label}</label>
+      {children}
     </div>
   );
 }
 
 function BottomBar({ label, onClick, disabled }) {
   return (
-    <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-gray-100">
+    <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-gray-100 shadow-lg">
       <button onClick={onClick} disabled={disabled}
         className={`btn-primary ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}>
         {label}
