@@ -31,6 +31,7 @@ export const driversAPI = {
   getMyJobs: (status) => api.get(`/drivers/me/jobs?status=${status}`),
   getMyEarnings: (period) => api.get(`/drivers/me/earnings?period=${period}`),
   setOnline: (isOnline) => api.patch('/drivers/me/online', { is_online: isOnline }),
+  setNotifyWhenOffline: (val) => api.patch('/drivers/me/notify-offline', { notify_when_offline: val }),
   getAvailability: () => api.get('/drivers/me/availability'),
   setAvailability: (slots) => api.put('/drivers/me/availability', { availability: slots }),
 };
