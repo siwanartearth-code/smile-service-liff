@@ -35,6 +35,7 @@ export const driversAPI = {
   setNotifyWhenOffline: (val) => api.patch('/drivers/me/notify-offline', { notify_when_offline: val }),
   getAvailability: () => api.get('/drivers/me/availability'),
   setAvailability: (slots) => api.put('/drivers/me/availability', { availability: slots }),
+  requestPayout:  (promptpay_id) => api.post('/drivers/me/request-payout', { promptpay_id }),
 };
 
 export const addressesAPI = {
