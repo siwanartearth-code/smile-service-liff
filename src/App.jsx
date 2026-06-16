@@ -12,18 +12,20 @@ import DriverRegisterPage from './pages/DriverRegisterPage';
 import DriverDashboardPage from './pages/DriverDashboardPage';
 import DriverAvailabilityPage from './pages/DriverAvailabilityPage';
 import DriverEarningsPage from './pages/DriverEarningsPage';
+import DriverDocumentsPage from './pages/DriverDocumentsPage';
 import LoadingScreen from './components/LoadingScreen';
 
 // Page router ตาม URL param
 const PAGE_ROUTES = {
-  booking:             BookingPage,
-  history:             BookingHistoryPage,
-  tracking:            TrackingPage,
-  review:              ReviewPage,
-  'driver-register':   DriverRegisterPage,
-  'driver-dashboard':  DriverDashboardPage,
+  booking:               BookingPage,
+  history:               BookingHistoryPage,
+  tracking:              TrackingPage,
+  review:                ReviewPage,
+  'driver-register':     DriverRegisterPage,
+  'driver-dashboard':    DriverDashboardPage,
   'driver-availability': DriverAvailabilityPage,
-  'driver-earnings':   DriverEarningsPage,
+  'driver-earnings':     DriverEarningsPage,
+  'driver-documents':    DriverDocumentsPage,
 };
 
 export default function App() {
