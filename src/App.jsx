@@ -89,13 +89,13 @@ export default function App() {
           return;
         }
 
-        // ── Login ครั้งแรก ─────────────────────────────────────────────────
-        const accessToken = liff.getAccessToken();
-        if (!accessToken) {
-          throw new Error('ไม่ได้รับ access token จาก LINE กรุณาปิดและเปิดใหม่');
-        }
+        // ── Login ครั้งแรก — ดึง profile จาก LIFF โดยตรง ──────────────────
+        const [accessToken, profile] = await Promise.all([
+          liff.getAccessToken(),
+          liff.getProfile(),
+        ]);
 
-        const { data } = await authAPI.loginWithLine(accessToken);
+        const { data } = await authAPI.loginWithLine(accessToken, profile);
         localStorage.setItem('smile_token', data.token);
         localStorage.setItem('smile_user', JSON.stringify(data.user));
         sessionStorage.removeItem('liff_attempts');

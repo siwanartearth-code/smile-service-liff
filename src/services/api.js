@@ -12,7 +12,7 @@ api.interceptors.request.use(config => {
 });
 
 export const authAPI = {
-  loginWithLine: (accessToken) => api.post('/auth/line', { access_token: accessToken }),
+  loginWithLine: (accessToken, profile) => api.post('/auth/line', { access_token: accessToken, profile }),
 };
 
 export const bookingsAPI = {
