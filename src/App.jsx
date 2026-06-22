@@ -66,9 +66,23 @@ export default function App() {
         }
 
         const accessToken = liff.getAccessToken();
-        const { data } = await authAPI.loginWithLine(accessToken);
-        localStorage.setItem('smile_token', data.token);
-        setUser(data.user);
+        if (!accessToken) {
+          // token หมดอายุ — force login ใหม่
+          liff.login();
+          return;
+        }
+        try {
+          const { data } = await authAPI.loginWithLine(accessToken);
+          localStorage.setItem('smile_token', data.token);
+          setUser(data.user);
+        } catch (authErr) {
+          // 401 = token หมดอายุ → login ใหม่
+          if (authErr.response?.status === 401) {
+            liff.login();
+            return;
+          }
+          throw authErr;
+        }
       } catch (err) {
         console.error('LIFF init error:', err);
         setError(err.message);
