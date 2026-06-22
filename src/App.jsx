@@ -38,11 +38,21 @@ export default function App() {
   const page = params.get('page') || 'booking';
   const PageComponent = PAGE_ROUTES[page] || BookingPage;
 
+  // Map page → LIFF ID (แต่ละหน้ามี LIFF ID แยก)
+  const LIFF_IDS = {
+    booking:           import.meta.env.VITE_LIFF_ID_BOOKING        || import.meta.env.VITE_LIFF_ID,
+    tracking:          import.meta.env.VITE_LIFF_ID_TRACKING       || import.meta.env.VITE_LIFF_ID,
+    history:           import.meta.env.VITE_LIFF_ID_HISTORY        || import.meta.env.VITE_LIFF_ID,
+    'driver-register': import.meta.env.VITE_LIFF_ID_DRIVER_REG     || import.meta.env.VITE_LIFF_ID,
+    'driver-earnings': import.meta.env.VITE_LIFF_ID_DRIVER_EARN    || import.meta.env.VITE_LIFF_ID,
+    'driver-dashboard':import.meta.env.VITE_LIFF_ID_DRIVER_DASH    || import.meta.env.VITE_LIFF_ID,
+  };
+
   useEffect(() => {
     const initLiff = async () => {
       try {
-        const liffId = import.meta.env.VITE_LIFF_ID;
-        if (!liffId) throw new Error('VITE_LIFF_ID not set');
+        const liffId = LIFF_IDS[page] || import.meta.env.VITE_LIFF_ID;
+        if (!liffId) throw new Error('LIFF ID not configured for page: ' + page);
 
         await liff.init({ liffId });
 
