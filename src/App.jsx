@@ -3,19 +3,17 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import liff from '@line/liff';
 import { authAPI } from './services/api';
 
-// Pages
-import BookingPage from './pages/BookingPage';
-import BookingHistoryPage from './pages/BookingHistoryPage';
-import TrackingPage from './pages/TrackingPage';
-import ReviewPage from './pages/ReviewPage';
-import DriverRegisterPage from './pages/DriverRegisterPage';
-import DriverDashboardPage from './pages/DriverDashboardPage';
+import BookingPage          from './pages/BookingPage';
+import BookingHistoryPage   from './pages/BookingHistoryPage';
+import TrackingPage         from './pages/TrackingPage';
+import ReviewPage           from './pages/ReviewPage';
+import DriverRegisterPage   from './pages/DriverRegisterPage';
+import DriverDashboardPage  from './pages/DriverDashboardPage';
 import DriverAvailabilityPage from './pages/DriverAvailabilityPage';
-import DriverEarningsPage from './pages/DriverEarningsPage';
-import DriverDocumentsPage from './pages/DriverDocumentsPage';
-import LoadingScreen from './components/LoadingScreen';
+import DriverEarningsPage   from './pages/DriverEarningsPage';
+import DriverDocumentsPage  from './pages/DriverDocumentsPage';
+import LoadingScreen        from './components/LoadingScreen';
 
-// Page router ตาม URL param
 const PAGE_ROUTES = {
   booking:               BookingPage,
   history:               BookingHistoryPage,
@@ -28,7 +26,6 @@ const PAGE_ROUTES = {
   'driver-documents':    DriverDocumentsPage,
 };
 
-// Map page → LIFF ID
 const LIFF_IDS = {
   booking:           import.meta.env.VITE_LIFF_ID_BOOKING     || import.meta.env.VITE_LIFF_ID,
   tracking:          import.meta.env.VITE_LIFF_ID_TRACKING    || import.meta.env.VITE_LIFF_ID,
@@ -40,65 +37,68 @@ const LIFF_IDS = {
 
 export default function App() {
   const [ready, setReady] = useState(false);
-  const [user, setUser]   = useState(null);
+  const [user,  setUser]  = useState(null);
   const [error, setError] = useState(null);
 
   const params = new URLSearchParams(window.location.search);
-  const page = params.get('page') || 'booking';
+  const page   = params.get('page') || 'booking';
   const PageComponent = PAGE_ROUTES[page] || BookingPage;
 
   useEffect(() => {
     const initLiff = async () => {
       try {
+        // ── Anti-loop: นับครั้งที่ redirect ──────────────────────────────
+        const attempts = parseInt(sessionStorage.getItem('liff_attempts') || '0');
+        if (attempts >= 3) {
+          sessionStorage.removeItem('liff_attempts');
+          throw new Error('เกิด redirect loop — กรุณาปิดและเปิดหน้าต่างใหม่ใน LINE');
+        }
+
         const liffId = LIFF_IDS[page] || import.meta.env.VITE_LIFF_ID;
         if (!liffId) throw new Error('LIFF ID not configured for page: ' + page);
 
-        // ping API เพื่อปลุก Render server (fire and forget)
+        // ping API (fire-and-forget)
         const apiUrl = import.meta.env.VITE_API_URL || 'https://smile-service-api.onrender.com';
         fetch(`${apiUrl}/health`).catch(() => {});
 
         await liff.init({ liffId });
 
         if (!liff.isLoggedIn()) {
+          sessionStorage.setItem('liff_attempts', attempts + 1);
           liff.login();
           return;
         }
 
-        // ✅ ใช้ cached JWT ถ้ามี — ข้ามการ call API ใหม่
-        const cached = localStorage.getItem('smile_token');
+        // ── ใช้ cached token ถ้ายังใช้ได้ ────────────────────────────────
+        const cached     = localStorage.getItem('smile_token');
         const cachedUser = localStorage.getItem('smile_user');
         if (cached && cachedUser) {
-          try {
-            setUser(JSON.parse(cachedUser));
-            setReady(true);
-            // refresh token ใน background โดยไม่ block UI
-            const accessToken = liff.getAccessToken();
-            if (accessToken) {
-              authAPI.loginWithLine(accessToken)
-                .then(({ data }) => {
-                  localStorage.setItem('smile_token', data.token);
-                  localStorage.setItem('smile_user', JSON.stringify(data.user));
-                  setUser(data.user);
-                })
-                .catch(() => {}); // ถ้า fail ก็ไม่เป็นไร token เดิมยังใช้ได้
-            }
-            return;
-          } catch {
-            localStorage.removeItem('smile_token');
-            localStorage.removeItem('smile_user');
+          setUser(JSON.parse(cachedUser));
+          sessionStorage.removeItem('liff_attempts'); // reset counter
+          // refresh ใน background
+          const accessToken = liff.getAccessToken();
+          if (accessToken) {
+            authAPI.loginWithLine(accessToken)
+              .then(({ data }) => {
+                localStorage.setItem('smile_token', data.token);
+                localStorage.setItem('smile_user', JSON.stringify(data.user));
+                setUser(data.user);
+              })
+              .catch(() => {});
           }
+          return;
         }
 
-        // ไม่มี cache — login ปกติ
+        // ── Login ครั้งแรก ─────────────────────────────────────────────────
         const accessToken = liff.getAccessToken();
         if (!accessToken) {
-          // access token หมด แต่ยังไม่ login loop — แสดง error แทน
-          throw new Error('ไม่สามารถรับ access token ได้ กรุณาปิดแล้วเปิดใหม่');
+          throw new Error('ไม่ได้รับ access token จาก LINE กรุณาปิดและเปิดใหม่');
         }
 
         const { data } = await authAPI.loginWithLine(accessToken);
         localStorage.setItem('smile_token', data.token);
         localStorage.setItem('smile_user', JSON.stringify(data.user));
+        sessionStorage.removeItem('liff_attempts');
         setUser(data.user);
 
       } catch (err) {
@@ -116,12 +116,17 @@ export default function App() {
 
   if (error) return (
     <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-gray-50">
-      <div className="text-center bg-white rounded-2xl p-8 shadow-md max-w-sm w-full">
+      <div className="bg-white rounded-2xl p-8 shadow-md max-w-sm w-full text-center">
         <div className="text-5xl mb-4">⚠️</div>
         <p className="text-red-600 font-semibold text-lg mb-2">เกิดข้อผิดพลาด</p>
         <p className="text-gray-500 text-sm mb-6">{error}</p>
         <button
-          onClick={() => { localStorage.removeItem('smile_token'); localStorage.removeItem('smile_user'); window.location.reload(); }}
+          onClick={() => {
+            localStorage.removeItem('smile_token');
+            localStorage.removeItem('smile_user');
+            sessionStorage.removeItem('liff_attempts');
+            window.location.reload();
+          }}
           className="w-full py-3 bg-green-600 text-white rounded-xl font-semibold"
         >
           🔄 ลองใหม่อีกครั้ง
