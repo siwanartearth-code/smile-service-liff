@@ -54,6 +54,10 @@ export default function App() {
         const liffId = LIFF_IDS[page] || import.meta.env.VITE_LIFF_ID;
         if (!liffId) throw new Error('LIFF ID not configured for page: ' + page);
 
+        // ping API ก่อนเพื่อปลุก Render server (free tier sleep)
+        const apiUrl = import.meta.env.VITE_API_URL || 'https://smile-service-api.onrender.com';
+        fetch(`${apiUrl}/health`).catch(() => {});
+
         await liff.init({ liffId });
 
         if (!liff.isLoggedIn()) {
